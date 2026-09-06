@@ -1,0 +1,8 @@
+{
+  "name": "TapEmpire - Telegram Tap-to-Earn Platform",
+  "description": "Production-ready Telegram Tap-to-Earn Mini App platform with Laravel API, React frontend, Admin dashboard, anti-cheat, referrals, and cPanel/Shared Hosting installer.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
