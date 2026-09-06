@@ -135,83 +135,52 @@ export class TelegramService {
   }
 
   /**
-   * Handle incoming Webhook from Telegram Bot
+   * Handle incoming Webhook from Telegram Bot using MySQL persistence
    */
-  public static handleBotUpdate(update: any): { replyText: string; replyMarkup?: any } {
+  public static async handleBotUpdate(update: any): Promise<{ replyText: string; replyMarkup?: any }> {
     const message = update?.message;
     if (!message) return { replyText: 'No message received' };
 
     const text = message.text?.trim() || '';
     const from = message.from || {};
-    const chatId = message.chat?.id;
-    const miniAppUrl = db.settings.telegram_webhook_url.replace('/api/telegram/webhook', '');
+    const miniAppUrl = process.env.TELEGRAM_MINI_APP_URL || (db.settings.telegram_webhook_url ? db.settings.telegram_webhook_url.replace('/api/telegram/webhook', '') : 'https://t.me');
 
     // Deep link start param (e.g., /start REF_1001)
     if (text.startsWith('/start')) {
       const parts = text.split(' ');
       const referralCode = parts.length > 1 ? parts[1].trim() : null;
 
-      // Register or find user
+      // Register or find user in MySQL
       if (from.id) {
-        let existingUser = Array.from(db.users.values()).find((u) => u.telegram_id === from.id);
+        let existingUser = await db.getUserByTelegramId(from.id);
         if (!existingUser) {
-          const newId = Date.now();
-          const newUser: UserRecord = {
-            id: newId,
+          let referrerId: number | null = null;
+          if (referralCode) {
+            const referrer = await db.getUserByReferralCode(referralCode);
+            if (referrer) {
+              referrerId = referrer.id;
+            }
+          }
+
+          existingUser = await db.createUser({
             telegram_id: from.id,
             username: from.username || `user_${from.id}`,
             first_name: from.first_name || 'Miner',
-            last_name: from.last_name || '',
+            last_name: from.last_name || null,
             avatar_url: `https://api.dicebear.com/7.x/bottts/svg?seed=${from.username || from.id}`,
-            referral_code: `REF_${newId}`,
-            status: 'active' as const,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          };
-          db.users.set(newId, newUser);
-          db.balances.set(newId, {
-            user_id: newId,
-            coins: 1000,
-            available_balance: 1000,
-            pending_withdrawal: 0,
-            total_earned: 1000,
-            total_withdrawn: 0,
-            updated_at: new Date().toISOString(),
-          });
-          db.energy.set(newId, {
-            user_id: newId,
-            current_energy: 1000,
-            max_energy: 1000,
-            regen_rate: 1,
-            regen_interval_seconds: 3,
-            last_energy_updated_at: new Date().toISOString(),
-          });
-          db.profiles.set(newId, {
-            user_id: newId,
-            level: 1,
-            current_xp: 50,
-            total_taps: 0,
-            daily_streak: 1,
-            last_sequence: 0,
+            language_code: from.language_code || 'en',
+            referral_code: `REF_${from.id}_${crypto.randomBytes(3).toString('hex').toUpperCase()}`,
+            referred_by: referrerId,
+            is_premium: Boolean(from.is_premium),
           });
 
-          // Handle referral attribution
-          if (referralCode) {
-            const referrer = Array.from(db.users.values()).find(
-              (u) => u.referral_code.toUpperCase() === referralCode.toUpperCase()
+          if (referrerId) {
+            await db.recordTransaction(
+              referrerId,
+              'referral',
+              5000,
+              `Welcome bonus for referring @${existingUser.username}`
             );
-            if (referrer && referrer.id !== newId) {
-              newUser.referred_by = referrer.id;
-              db.referrals.push({
-                id: 'ref_' + crypto.randomBytes(4).toString('hex'),
-                referrer_id: referrer.id,
-                referred_id: newId,
-                tier: 1,
-                created_at: new Date().toISOString(),
-              });
-              // Referral welcome bonus
-              db.recordTransaction(referrer.id, 'referral', 5000, `Direct referral bonus for @${newUser.username}`);
-            }
           }
         }
       }
@@ -250,16 +219,27 @@ export class TelegramService {
     }
 
     if (text === '/balance') {
-      const user = Array.from(db.users.values()).find((u) => u.telegram_id === from.id);
-      const balance = user ? db.balances.get(user.id)?.coins || 0 : 0;
+      let balance = 0;
+      if (from.id) {
+        const user = await db.getUserByTelegramId(from.id);
+        if (user) {
+          const bal = await db.getBalance(user.id);
+          balance = bal.coins;
+        }
+      }
       return {
         replyText: `💰 Your Current Balance:\n\n${balance.toLocaleString()} ${db.settings.coin_symbol} (${db.settings.coin_name})\n\nKeep tapping and claiming tasks to reach the next level!`,
       };
     }
 
     if (text === '/referral') {
-      const user = Array.from(db.users.values()).find((u) => u.telegram_id === from.id);
-      const code = user ? user.referral_code : 'EMPIRE99';
+      let code = 'EMPIRE';
+      if (from.id) {
+        const user = await db.getUserByTelegramId(from.id);
+        if (user) {
+          code = user.referral_code;
+        }
+      }
       const refLink = `https://t.me/${db.settings.telegram_bot_username}?start=${code}`;
       return {
         replyText: `👥 Your Referral Link:\n\n${refLink}\n\nInvite friends and earn:\n• Tier 1: 10% commission\n• Tier 2: 3% commission\n• Tier 3: 1% commission`,
